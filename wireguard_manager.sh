@@ -131,6 +131,10 @@ usage() {
   echo "  $0 validate                                - Validate WireGuard configuration"
   echo "  $0 health                                  - Comprehensive health check"
   echo "  $0 stats [client-name]                     - Show detailed statistics"
+  echo "  $0 export <wg-name>                        - Export client configuration"
+  echo "  $0 import <config-file>                    - Import client configuration"
+  echo "  $0 backup                                  - Create full configuration backup"
+  echo "  $0 restore <backup-file>                   - Restore from backup"
   echo "  $0 status                                  - Show WireGuard service status"
   echo "  $0 start                                   - Start WireGuard service"
   echo "  $0 stop                                    - Stop WireGuard service"
@@ -148,6 +152,10 @@ usage() {
   echo "  $0 health                                 - Full health check"
   echo "  $0 stats                                  - Show overall statistics"
   echo "  $0 stats client1                           - Show client1 statistics"
+  echo "  $0 export client1                          - Export client1 config"
+  echo "  $0 import client1.conf                     - Import client config"
+  echo "  $0 backup                                 - Create backup"
+  echo "  $0 restore backup.tar.gz                   - Restore from backup"
   echo "  $0 del client1                             - Delete client1"
   echo "  $0 status                                 - Show current status"
   echo ""
@@ -1331,6 +1339,475 @@ bytes_to_human() {
   fi
 }
 
+export_client() {
+  local client_name=$1
+
+  if [ ! -f /etc/wireguard/wg0.conf ]; then
+    echo "Error: WireGuard is not initialized. Run 'init' first."
+    exit 1
+  fi
+
+  # クライアントが存在するか確認
+  if ! grep -q "^### ${client_name}$" /etc/wireguard/wg0.conf; then
+    echo "❌ Error: Client '$client_name' not found."
+    exit 1
+  fi
+
+  echo "📤 Exporting client configuration: ${client_name}"
+
+  # エクスポートディレクトリの作成
+  local export_dir="$HOMEDIR/wireguard_exports"
+  mkdir -p "$export_dir"
+
+  # タイムスタンプ付きのエクスポートファイル名
+  local timestamp=$(date +%Y%m%d_%H%M%S)
+  local export_file="$export_dir/${client_name}_export_${timestamp}.tar.gz"
+
+  # 一時ディレクトリを作成
+  local temp_dir=$(mktemp -d)
+  local client_dir="$temp_dir/$client_name"
+  mkdir -p "$client_dir"
+
+  # クライアントの設定情報を収集
+  local client_pubkey=""
+  local client_ip=""
+  local client_allowed_ips=""
+
+  local in_client_section=false
+  while IFS= read -r line; do
+    if [[ $line =~ ^###\ ${client_name}$ ]]; then
+      in_client_section=true
+    elif [[ $line =~ ^###\ .* ]] && [[ $in_client_section == true ]]; then
+      break
+    elif [[ $in_client_section == true ]]; then
+      if [[ $line =~ ^PublicKey\ =\ (.+)$ ]]; then
+        client_pubkey="${BASH_REMATCH[1]}"
+      elif [[ $line =~ ^AllowedIPs\ =\ (.+)$ ]]; then
+        client_ip="${BASH_REMATCH[1]}"
+        client_allowed_ips="$line"
+      fi
+    fi
+  done < /etc/wireguard/wg0.conf
+
+  # エクスポート情報ファイルの作成
+  cat > "$client_dir/export_info.txt" << EOF
+WireGuard Client Export Information
+===================================
+Client Name: $client_name
+Export Date: $(date)
+Server: $(hostname)
+
+Configuration:
+- VPN IP: $client_ip
+- Public Key: ${client_pubkey:0:16}...
+- Allowed IPs: ${client_allowed_ips#AllowedIPs = }
+EOF
+
+  # クライアント設定ファイルのコピー
+  local config_file="$HOMEDIR/wireguard/conf/${client_name}.conf"
+  if [ -f "$config_file" ]; then
+    cp "$config_file" "$client_dir/"
+    echo "✅ Client configuration file copied"
+  else
+    echo "⚠️  Client configuration file not found"
+  fi
+
+  # QRコードファイルのコピー
+  local qr_file="$HOMEDIR/wireguard/qrcodes/${client_name}.png"
+  if [ -f "$qr_file" ]; then
+    cp "$qr_file" "$client_dir/"
+    echo "✅ QR code file copied"
+  else
+    echo "⚠️  QR code file not found"
+  fi
+
+  # 秘密鍵ファイルのコピー（注意喚起）
+  local priv_key_file="/etc/wireguard/keys/${client_name}.prv"
+  if [ -f "$priv_key_file" ]; then
+    cp "$priv_key_file" "$client_dir/"
+    echo "⚠️  Private key file copied (handle with care!)"
+  else
+    echo "❌ Private key file not found"
+  fi
+
+  # 公開鍵ファイルのコピー
+  local pub_key_file="/etc/wireguard/keys/${client_name}.pub"
+  if [ -f "$pub_key_file" ]; then
+    cp "$pub_key_file" "$client_dir/"
+    echo "✅ Public key file copied"
+  fi
+
+  # サーバー設定の一部をエクスポート（クライアントが必要とする情報のみ）
+  local server_config="$client_dir/server_info.txt"
+  if [ -f /etc/wireguard/wg0.conf ]; then
+    grep "^ListenPort\|^Address\|^PrivateKey" /etc/wireguard/wg0.conf > "$server_config" 2>/dev/null || true
+    if [ -s "$server_config" ]; then
+      echo "✅ Server configuration info exported"
+    fi
+  fi
+
+  # アーカイブの作成
+  cd "$temp_dir" && tar -czf "$export_file" "$client_name" 2>/dev/null
+
+  if [ $? -eq 0 ]; then
+    echo "✅ Client configuration exported successfully!"
+    echo "📁 Export file: $export_file"
+    echo "📊 File size: $(stat -c%s "$export_file" 2>/dev/null | xargs -I {} echo "scale=2; {}/1024/1024" | bc 2>/dev/null || echo "unknown") MB"
+  else
+    echo "❌ Failed to create export archive"
+    rm -f "$export_file"
+    exit 1
+  fi
+
+  # 一時ディレクトリの削除
+  rm -rf "$temp_dir"
+
+  # 適切な権限設定
+  chown "$USERNAME:" "$export_file" 2>/dev/null || true
+  chmod 600 "$export_file"
+
+  echo ""
+  echo "🔐 Security Notice:"
+  echo "   - Keep the export file secure as it contains private keys"
+  echo "   - Share only with authorized personnel"
+  echo "   - Consider password-protecting the archive"
+}
+
+import_client() {
+  local config_file=$1
+
+  if [ ! -f /etc/wireguard/wg0.conf ]; then
+    echo "Error: WireGuard is not initialized. Run 'init' first."
+    exit 1
+  fi
+
+  if [ ! -f "$config_file" ]; then
+    echo "❌ Error: Configuration file '$config_file' not found."
+    exit 1
+  fi
+
+  echo "📥 Importing client configuration from: $config_file"
+
+  # 設定ファイルの内容を確認
+  if ! grep -q "\[Interface\]" "$config_file" || ! grep -q "\[Peer\]" "$config_file"; then
+    echo "❌ Error: Invalid WireGuard configuration file format."
+    echo "   File must contain both [Interface] and [Peer] sections."
+    exit 1
+  fi
+
+  # クライアント名をファイル名から推測、またはインターフェースセクションから取得
+  local client_name=""
+  if [[ "$config_file" =~ /([^/]+)\.conf$ ]]; then
+    client_name="${BASH_REMATCH[1]}"
+  elif [[ "$config_file" =~ ([^/]+)$ ]]; then
+    client_name="${BASH_REMATCH[1]%.conf}"
+  fi
+
+  # インターフェースセクションからクライアント名を取得（Addressから）
+  local address_line=$(grep "^Address" "$config_file" | head -n1)
+  if [[ $address_line =~ Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+\.)[0-9]+ ]]; then
+    local ip_prefix="${BASH_REMATCH[1]}"
+    # IPアドレスの最後の一桁からクライアント名を推測
+    local last_octet=$(grep "^Address" "$config_file" | sed 's/.*\.//' | sed 's/\/.*//')
+    if [ -n "$last_octet" ] && [ "$last_octet" -ge 1 ] && [ "$last_octet" -le 254 ]; then
+      client_name="client${last_octet}"
+    fi
+  fi
+
+  if [ -z "$client_name" ]; then
+    echo "❌ Error: Could not determine client name from configuration file."
+    echo "   Please specify a client name or ensure the config file has a proper Address field."
+    exit 1
+  fi
+
+  # クライアントが既に存在するか確認
+  if grep -q "^### ${client_name}$" /etc/wireguard/wg0.conf; then
+    echo "⚠️  Warning: Client '$client_name' already exists."
+    read -p "   Do you want to overwrite? (y/N): " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      echo "Import cancelled."
+      exit 0
+    fi
+  fi
+
+  echo "🔄 Importing as client: $client_name"
+
+  # 秘密鍵の抽出と保存
+  local private_key=$(grep "^PrivateKey" "$config_file" | sed 's/.*= //' | tr -d ' ')
+  if [ -n "$private_key" ]; then
+    echo "$private_key" > "/etc/wireguard/keys/${client_name}.prv"
+    chmod 600 "/etc/wireguard/keys/${client_name}.prv"
+    echo "✅ Private key saved"
+  else
+    echo "❌ Error: No private key found in configuration file"
+    exit 1
+  fi
+
+  # 公開鍵の生成と保存
+  if command -v wg >/dev/null 2>&1; then
+    local public_key=$(echo "$private_key" | wg pubkey)
+    if [ -n "$public_key" ]; then
+      echo "$public_key" > "/etc/wireguard/keys/${client_name}.pub"
+      chmod 644 "/etc/wireguard/keys/${client_name}.pub"
+      echo "✅ Public key generated and saved"
+    fi
+  fi
+
+  # クライアント設定ファイルの保存
+  cp "$config_file" "$HOMEDIR/wireguard/conf/${client_name}.conf"
+  chown "$USERNAME:" "$HOMEDIR/wireguard/conf/${client_name}.conf" 2>/dev/null || true
+  chmod 600 "$HOMEDIR/wireguard/conf/${client_name}.conf"
+
+  # VPN IPアドレスの取得
+  local vpn_ip=""
+  if [[ $address_line =~ ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+    vpn_ip="${BASH_REMATCH[1]}"
+  fi
+
+  # サーバー設定ファイルへの追加
+  local server_pubkey=$(cat /etc/wireguard/keys/server.pub 2>/dev/null)
+  local server_endpoint=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || curl -s --max-time 3 https://checkip.amazonaws.com 2>/dev/null || hostname -I | awk '{print $1}')
+  local server_port=$(grep "^ListenPort" /etc/wireguard/wg0.conf | cut -d' ' -f3)
+
+  # 既存のクライアント設定を削除（上書きの場合）
+  sed -i "/^### ${client_name}/,/^$/d" /etc/wireguard/wg0.conf
+
+  # 新しいクライアント設定の追加
+  cat >> /etc/wireguard/wg0.conf << EOF
+
+### ${client_name}
+[Peer]
+PublicKey = ${public_key}
+AllowedIPs = ${vpn_ip}/32
+EOF
+
+  echo "✅ Client configuration added to server"
+
+  # QRコードの生成
+  if command -v qrencode >/dev/null 2>&1; then
+    local qr_file="$HOMEDIR/wireguard/qrcodes/${client_name}.png"
+    qrencode -t png -o "$qr_file" < "$HOMEDIR/wireguard/conf/${client_name}.conf"
+    chown "$USERNAME:" "$qr_file" 2>/dev/null || true
+    chmod 600 "$qr_file"
+    echo "✅ QR code generated"
+  fi
+
+  # 設定の再読み込み
+  if systemctl is-active --quiet wg-quick@wg0; then
+    wg syncconf wg0 <(wg-quick strip wg0) 2>/dev/null || true
+    echo "🔄 WireGuard configuration reloaded"
+  fi
+
+  echo "✅ Client '$client_name' imported successfully!"
+  echo "   Configuration: $HOMEDIR/wireguard/conf/${client_name}.conf"
+  if [ -f "$qr_file" ]; then
+    echo "   QR Code: $qr_file"
+  fi
+}
+
+backup_config() {
+  if [ ! -f /etc/wireguard/wg0.conf ]; then
+    echo "Error: WireGuard is not initialized. Run 'init' first."
+    exit 1
+  fi
+
+  echo "💾 Creating full WireGuard configuration backup..."
+
+  # バックアップディレクトリの作成
+  local backup_dir="$HOMEDIR/wireguard_backups"
+  mkdir -p "$backup_dir"
+
+  # タイムスタンプ付きのバックアップファイル名
+  local timestamp=$(date +%Y%m%d_%H%M%S)
+  local backup_file="$backup_dir/wireguard_backup_${timestamp}.tar.gz"
+
+  # 一時ディレクトリを作成
+  local temp_dir=$(mktemp -d)
+  local backup_temp_dir="$temp_dir/wireguard_backup"
+  mkdir -p "$backup_temp_dir"
+
+  # バックアップ情報ファイルの作成
+  cat > "$backup_temp_dir/backup_info.txt" << EOF
+WireGuard Configuration Backup
+==============================
+Backup Date: $(date)
+Server: $(hostname)
+WireGuard Status: $(systemctl is-active wg-quick@wg0 2>/dev/null || echo "unknown")
+
+This backup contains:
+- Server configuration (/etc/wireguard/)
+- Client configurations ($HOMEDIR/wireguard/)
+- All keys and certificates
+- QR codes for mobile devices
+
+To restore, use: $0 restore $backup_file
+EOF
+
+  # サーバー設定のコピー
+  if [ -d /etc/wireguard ]; then
+    cp -r /etc/wireguard "$backup_temp_dir/"
+    echo "✅ Server configuration backed up"
+  fi
+
+  # クライアント設定のコピー
+  if [ -d "$HOMEDIR/wireguard" ]; then
+    cp -r "$HOMEDIR/wireguard" "$backup_temp_dir/"
+    echo "✅ Client configurations backed up"
+  fi
+
+  # サービス状態の保存
+  local service_status=$(systemctl is-active wg-quick@wg0 2>/dev/null || echo "inactive")
+  echo "$service_status" > "$backup_temp_dir/service_status.txt"
+  echo "✅ Service status saved"
+
+  # アーカイブの作成
+  cd "$temp_dir" && tar -czf "$backup_file" "wireguard_backup" 2>/dev/null
+
+  if [ $? -eq 0 ]; then
+    echo "✅ Full backup created successfully!"
+    echo "📁 Backup file: $backup_file"
+    echo "📊 Backup size: $(stat -c%s "$backup_file" 2>/dev/null | xargs -I {} echo "scale=2; {}/1024/1024" | bc 2>/dev/null || echo "unknown") MB"
+  else
+    echo "❌ Failed to create backup archive"
+    rm -f "$backup_file"
+    exit 1
+  fi
+
+  # 一時ディレクトリの削除
+  rm -rf "$temp_dir"
+
+  # 適切な権限設定
+  chown "$USERNAME:" "$backup_file" 2>/dev/null || true
+  chmod 600 "$backup_file"
+
+  # 古いバックアップのクリーンアップ（最新10個以外を削除）
+  local backup_count=$(ls -1 "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | wc -l)
+  if [ "$backup_count" -gt 10 ]; then
+    ls -1t "$backup_dir"/wireguard_backup_*.tar.gz | tail -n +11 | xargs rm -f 2>/dev/null || true
+    echo "🧹 Old backups cleaned up (keeping latest 10)"
+  fi
+
+  echo ""
+  echo "🔐 Security Notice:"
+  echo "   - Store backup files securely as they contain sensitive key material"
+  echo "   - Consider encrypting backups for long-term storage"
+}
+
+restore_config() {
+  local backup_file=$1
+
+  if [ ! -f "$backup_file" ]; then
+    echo "❌ Error: Backup file '$backup_file' not found."
+    exit 1
+  fi
+
+  echo "🔄 Restoring WireGuard configuration from: $backup_file"
+
+  # バックアップファイルの検証
+  if ! tar -tzf "$backup_file" >/dev/null 2>&1; then
+    echo "❌ Error: Invalid backup file format."
+    exit 1
+  fi
+
+  # バックアップにwireguard_backupディレクトリが含まれているか確認
+  if ! tar -tf "$backup_file" | grep -q "^wireguard_backup/"; then
+    echo "❌ Error: Invalid backup file structure."
+    exit 1
+  fi
+
+  # 現在の設定のバックアップ（念のため）
+  local emergency_backup="$HOMEDIR/wireguard_emergency_backup_$(date +%Y%m%d_%H%M%S)"
+  if [ -d /etc/wireguard ] || [ -d "$HOMEDIR/wireguard" ]; then
+    mkdir -p "$emergency_backup"
+    cp -r /etc/wireguard "$emergency_backup/" 2>/dev/null || true
+    cp -r "$HOMEDIR/wireguard" "$emergency_backup/" 2>/dev/null || true
+    echo "🛡️  Emergency backup created: $emergency_backup"
+  fi
+
+  # 一時ディレクトリを作成
+  local temp_dir=$(mktemp -d)
+  cd "$temp_dir"
+
+  # バックアップの展開
+  if ! tar -xzf "$backup_file"; then
+    echo "❌ Error: Failed to extract backup file."
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+
+  if [ ! -d "wireguard_backup" ]; then
+    echo "❌ Error: Backup structure is invalid."
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+
+  echo "📂 Extracting backup contents..."
+
+  # WireGuardサービスの停止
+  if systemctl is-active --quiet wg-quick@wg0; then
+    echo "🛑 Stopping WireGuard service..."
+    systemctl stop wg-quick@wg0
+  fi
+
+  # サーバー設定の復元
+  if [ -d "wireguard_backup/wireguard" ]; then
+    rm -rf /etc/wireguard
+    cp -r "wireguard_backup/wireguard" /etc/
+    echo "✅ Server configuration restored"
+  fi
+
+  # クライアント設定の復元
+  if [ -d "wireguard_backup/wireguard" ]; then
+    rm -rf "$HOMEDIR/wireguard"
+    cp -r "wireguard_backup/wireguard" "$HOMEDIR/"
+    chown -R "$USERNAME:" "$HOMEDIR/wireguard" 2>/dev/null || true
+    echo "✅ Client configurations restored"
+  fi
+
+  # 適切な権限設定
+  if [ -d /etc/wireguard ]; then
+    chmod 600 /etc/wireguard/wg0.conf 2>/dev/null || true
+    chmod 700 /etc/wireguard/scripts/* 2>/dev/null || true
+    find /etc/wireguard/keys -type f -exec chmod 600 {} \; 2>/dev/null || true
+    echo "✅ File permissions restored"
+  fi
+
+  # 一時ディレクトリの削除
+  rm -rf "$temp_dir"
+
+  # 設定の検証
+  echo "🔍 Validating restored configuration..."
+  if validate_config >/dev/null 2>&1; then
+    echo "✅ Configuration validation passed"
+
+    # サービスの起動
+    echo "🚀 Starting WireGuard service..."
+    if systemctl start wg-quick@wg0; then
+      echo "✅ WireGuard service started successfully"
+    else
+      echo "⚠️  Failed to start WireGuard service"
+    fi
+  else
+    echo "❌ Configuration validation failed"
+    echo "🔧 Please check the restored configuration manually"
+    echo "🛡️ Emergency backup available: $emergency_backup"
+    exit 1
+  fi
+
+  echo "✅ WireGuard configuration restored successfully!"
+  echo ""
+  echo "📋 Restoration Summary:"
+  echo "   - Backup file: $backup_file"
+  echo "   - Emergency backup: $emergency_backup"
+  echo "   - Service status: $(systemctl is-active wg-quick@wg0 2>/dev/null || echo "unknown")"
+
+  if [ -n "$emergency_backup" ]; then
+    echo ""
+    echo "🛡️ If something goes wrong, you can restore from: $emergency_backup"
+  fi
+}
+
 show_status() {
   echo "=== WireGuard Service Status ==="
   echo ""
@@ -1467,6 +1944,10 @@ case "$CMD" in
   validate) [[ $# -ne 0 ]] && usage; validate_config ;;
   health) [[ $# -ne 0 ]] && usage; health_check ;;
   stats) [[ $# -gt 1 ]] && usage; show_stats "$1" ;;
+  export) [[ $# -ne 1 ]] && usage; export_client "$1" ;;
+  import) [[ $# -ne 1 ]] && usage; import_client "$1" ;;
+  backup) [[ $# -ne 0 ]] && usage; backup_config ;;
+  restore) [[ $# -ne 1 ]] && usage; restore_config "$1" ;;
   status) [[ $# -ne 0 ]] && usage; show_status ;;
   start) [[ $# -ne 0 ]] && usage; start_service ;;
   stop) [[ $# -ne 0 ]] && usage; stop_service ;;
