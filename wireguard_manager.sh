@@ -131,14 +131,32 @@ usage() {
   echo "  $0 validate                                - Validate WireGuard configuration"
   echo "  $0 health                                  - Comprehensive health check"
   echo "  $0 stats [client-name]                     - Show detailed statistics"
+  echo "  $0 logs [options]                          - Analyze WireGuard logs"
   echo "  $0 export <wg-name>                        - Export client configuration"
   echo "  $0 import <config-file>                    - Import client configuration"
   echo "  $0 backup                                  - Create full configuration backup"
   echo "  $0 restore <backup-file>                   - Restore from backup"
+  echo "  $0 schedule <frequency>                    - Schedule automatic backups"
+  echo "  $0 backup-list                             - List all backup files"
+  echo "  $0 backup-cleanup                          - Clean up old backup files"
   echo "  $0 status                                  - Show WireGuard service status"
   echo "  $0 start                                   - Start WireGuard service"
   echo "  $0 stop                                    - Stop WireGuard service"
   echo "  $0 restart                                 - Restart WireGuard service"
+  echo ""
+  echo "Log options:"
+  echo "  $0 logs                                    - Show recent logs (default: 1h)"
+  echo "  $0 logs --since <time>                     - Show logs since specified time (1h, 24h, 7d)"
+  echo "  $0 logs --level <level>                    - Filter by log level (error, warning, info)"
+  echo "  $0 logs --client <name>                    - Show logs for specific client"
+  echo "  $0 logs --follow                           - Follow logs in real-time"
+  echo "  $0 logs --summary                          - Show log summary and statistics"
+  echo ""
+  echo "Backup schedule options:"
+  echo "  $0 schedule daily                          - Schedule daily backups at 02:00"
+  echo "  $0 schedule weekly                         - Schedule weekly backups (Sunday 02:00)"
+  echo "  $0 schedule disable                        - Disable automatic backups"
+  echo "  $0 schedule status                         - Show backup schedule status"
   echo ""
   echo "Examples:"
   echo "  $0 init 51820                             - Initialize with port 51820"
@@ -152,10 +170,20 @@ usage() {
   echo "  $0 health                                 - Full health check"
   echo "  $0 stats                                  - Show overall statistics"
   echo "  $0 stats client1                           - Show client1 statistics"
+  echo "  $0 logs                                   - Show recent logs"
+  echo "  $0 logs --since 24h                       - Show last 24 hours logs"
+  echo "  $0 logs --level error                     - Show only error logs"
+  echo "  $0 logs --client client1                  - Show client1 related logs"
+  echo "  $0 logs --follow                          - Follow logs in real-time"
+  echo "  $0 logs --summary                         - Show log statistics"
   echo "  $0 export client1                          - Export client1 config"
   echo "  $0 import client1.conf                     - Import client config"
   echo "  $0 backup                                 - Create backup"
   echo "  $0 restore backup.tar.gz                   - Restore from backup"
+  echo "  $0 schedule daily                          - Set daily backup schedule"
+  echo "  $0 schedule status                         - Check backup schedule"
+  echo "  $0 backup-list                             - List all backups"
+  echo "  $0 backup-cleanup                          - Clean up old backups"
   echo "  $0 del client1                             - Delete client1"
   echo "  $0 status                                 - Show current status"
   echo ""
@@ -1694,6 +1722,285 @@ EOF
   echo "   - Consider encrypting backups for long-term storage"
 }
 
+schedule_backup() {
+  local frequency=$1
+  local cron_file="/etc/cron.d/wireguard_backup"
+  local backup_script="/usr/local/bin/wireguard_backup.sh"
+
+  case $frequency in
+    "daily")
+      echo "⏰ Setting up daily backups at 02:00..."
+      # バックアップスクリプトの作成
+      cat > "$backup_script" << 'EOF'
+#!/bin/bash
+BACKUP_DIR="/home/'$USERNAME'/wireguard_backups"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="$BACKUP_DIR/wireguard_backup_${TIMESTAMP}.tar.gz"
+
+/home/'$USERNAME'/wireguard_manager/wireguard_manager.sh backup >/dev/null 2>&1
+
+# 古いバックアップのクリーンアップ（30日以上前のものを削除）
+find "$BACKUP_DIR" -name "wireguard_backup_*.tar.gz" -mtime +30 -delete 2>/dev/null || true
+EOF
+
+      chmod +x "$backup_script"
+
+      # cronジョブの設定
+      cat > "$cron_file" << EOF
+# WireGuard automatic daily backup
+0 2 * * * root $backup_script >/dev/null 2>&1
+EOF
+
+      chmod 644 "$cron_file"
+      echo "✅ Daily backup scheduled at 02:00"
+      ;;
+
+    "weekly")
+      echo "⏰ Setting up weekly backups (Sunday at 02:00)..."
+      # バックアップスクリプトの作成
+      cat > "$backup_script" << 'EOF'
+#!/bin/bash
+BACKUP_DIR="/home/'$USERNAME'/wireguard_backups"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="$BACKUP_DIR/wireguard_backup_${TIMESTAMP}.tar.gz"
+
+/home/'$USERNAME'/wireguard_manager/wireguard_manager.sh backup >/dev/null 2>&1
+
+# 古いバックアップのクリーンアップ（90日以上前のものを削除）
+find "$BACKUP_DIR" -name "wireguard_backup_*.tar.gz" -mtime +90 -delete 2>/dev/null || true
+EOF
+
+      chmod +x "$backup_script"
+
+      # cronジョブの設定
+      cat > "$cron_file" << EOF
+# WireGuard automatic weekly backup
+0 2 * * 0 root $backup_script >/dev/null 2>&1
+EOF
+
+      chmod 644 "$cron_file"
+      echo "✅ Weekly backup scheduled (Sunday at 02:00)"
+      ;;
+
+    "disable")
+      echo "🛑 Disabling automatic backups..."
+      rm -f "$cron_file" 2>/dev/null || true
+      rm -f "$backup_script" 2>/dev/null || true
+      echo "✅ Automatic backups disabled"
+      ;;
+
+    "status")
+      echo "📊 Backup schedule status:"
+      echo ""
+
+      if [ -f "$cron_file" ]; then
+        echo "✅ Automatic backup is ENABLED"
+        echo "📋 Current cron job:"
+        cat "$cron_file" | grep -v "^#" | grep -v "^$"
+        echo ""
+        echo "📁 Backup script: $backup_script"
+        if [ -f "$backup_script" ]; then
+          echo "✅ Backup script exists"
+        else
+          echo "❌ Backup script missing"
+        fi
+      else
+        echo "❌ Automatic backup is DISABLED"
+      fi
+
+      # バックアップディレクトリの状態
+      local backup_dir="$HOMEDIR/wireguard_backups"
+      if [ -d "$backup_dir" ]; then
+        local backup_count=$(ls -1 "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | wc -l)
+        local latest_backup=$(ls -t "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | head -n1)
+        echo ""
+        echo "📁 Backup directory: $backup_dir"
+        echo "📊 Total backups: $backup_count"
+        if [ -n "$latest_backup" ]; then
+          echo "🕒 Latest backup: $(basename "$latest_backup")"
+          echo "📅 Backup date: $(stat -c '%y' "$latest_backup" 2>/dev/null | cut -d'.' -f1)"
+        fi
+      else
+        echo ""
+        echo "📁 Backup directory: Not created yet"
+      fi
+      ;;
+
+    *)
+      echo "❌ Invalid frequency. Use: daily, weekly, disable, or status"
+      return 1
+      ;;
+  esac
+}
+
+list_backups() {
+  local backup_dir="$HOMEDIR/wireguard_backups"
+
+  echo "=== WireGuard Backup Files ==="
+  echo ""
+
+  if [ ! -d "$backup_dir" ]; then
+    echo "📁 Backup directory does not exist: $backup_dir"
+    echo "💡 Create your first backup with: $0 backup"
+    return 0
+  fi
+
+  local backup_files=("$backup_dir"/wireguard_backup_*.tar.gz)
+
+  if [ ! -f "${backup_files[0]}" ]; then
+    echo "📭 No backup files found in: $backup_dir"
+    echo "💡 Create your first backup with: $0 backup"
+    return 0
+  fi
+
+  echo "📂 Backup Directory: $backup_dir"
+  echo ""
+
+  # バックアップファイルを新しい順に表示
+  local count=0
+  while IFS= read -r backup_file; do
+    if [ -f "$backup_file" ]; then
+      ((count++))
+      local filename=$(basename "$backup_file")
+      local file_size=$(stat -c%s "$backup_file" 2>/dev/null || echo "0")
+      local file_date=$(stat -c%y "$backup_file" 2>/dev/null | cut -d'.' -f1 || echo "unknown")
+
+      # ファイルサイズを人間可読形式に変換
+      local size_human
+      if command -v numfmt >/dev/null 2>&1; then
+        size_human=$(numfmt --to=iec-i --suffix=B "$file_size" 2>/dev/null || echo "${file_size}B")
+      else
+        size_human="${file_size}B"
+      fi
+
+      echo "🔢 $count. $filename"
+      echo "   📅 Date: $file_date"
+      echo "   📏 Size: $size_human"
+      echo "   📁 Path: $backup_file"
+      echo ""
+    fi
+  done < <(ls -t "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null)
+
+  echo "📊 Summary:"
+  echo "   Total backups: $count"
+
+  # バックアップの保存期間推定
+  if [ $count -gt 0 ]; then
+    local oldest_backup=$(ls -t "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | tail -n1)
+    local newest_backup=$(ls -t "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | head -n1)
+
+    if [ -n "$oldest_backup" ] && [ -n "$newest_backup" ]; then
+      local oldest_date=$(stat -c%Y "$oldest_backup" 2>/dev/null || echo "0")
+      local newest_date=$(stat -c%Y "$newest_backup" 2>/dev/null || echo "0")
+
+      if [ "$oldest_date" != "0" ] && [ "$newest_date" != "0" ]; then
+        local days_span=$(( (newest_date - oldest_date) / 86400 ))
+        echo "   Date range: $days_span days"
+      fi
+    fi
+
+    # 合計サイズ計算
+    local total_size=$(du -bc "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | tail -n1 | cut -f1 || echo "0")
+    if [ "$total_size" != "0" ]; then
+      if command -v numfmt >/dev/null 2>&1; then
+        local total_human=$(numfmt --to=iec-i --suffix=B "$total_size" 2>/dev/null || echo "${total_size}B")
+        echo "   Total size: $total_human"
+      else
+        echo "   Total size: ${total_size}B"
+      fi
+    fi
+  fi
+
+  echo ""
+  echo "💡 Usage:"
+  echo "   Restore backup: $0 restore <filename>"
+  echo "   Clean old backups: $0 backup-cleanup"
+}
+
+cleanup_backups() {
+  local backup_dir="$HOMEDIR/wireguard_backups"
+
+  echo "🧹 Cleaning up old WireGuard backup files..."
+  echo ""
+
+  if [ ! -d "$backup_dir" ]; then
+    echo "📁 Backup directory does not exist: $backup_dir"
+    return 0
+  fi
+
+  local before_count=$(ls -1 "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | wc -l)
+  local before_size=$(du -bc "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | tail -n1 | cut -f1 2>/dev/null || echo "0")
+
+  echo "📊 Before cleanup:"
+  echo "   Files: $before_count"
+  if command -v numfmt >/dev/null 2>&1 && [ "$before_size" != "0" ]; then
+    echo "   Size: $(numfmt --to=iec-i --suffix=B "$before_size")"
+  fi
+  echo ""
+
+  # クリーンアップ戦略
+  local removed_files=0
+  local freed_space=0
+
+  # 戦略1: 7日以上前のファイルを削除（最新10個は保持）
+  echo "🗂️  Strategy 1: Remove backups older than 7 days (keep latest 10)"
+  local old_files=$(find "$backup_dir" -name "wireguard_backup_*.tar.gz" -mtime +7 2>/dev/null | head -n -10 2>/dev/null || true)
+  if [ -n "$old_files" ]; then
+    while IFS= read -r old_file; do
+      if [ -f "$old_file" ]; then
+        local file_size=$(stat -c%s "$old_file" 2>/dev/null || echo "0")
+        rm -f "$old_file"
+        ((removed_files++))
+        freed_space=$((freed_space + file_size))
+        echo "   🗑️  Removed: $(basename "$old_file")"
+      fi
+    done <<< "$old_files"
+  fi
+
+  # 戦略2: 100個以上のバックアップがある場合、最も古いものを削除して50個残す
+  local current_count=$(ls -1 "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | wc -l)
+  if [ "$current_count" -gt 100 ]; then
+    echo ""
+    echo "🗂️  Strategy 2: Too many backups ($current_count > 100), keeping latest 50"
+    local excess_files=$(ls -t "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | tail -n +51)
+    while IFS= read -r excess_file; do
+      if [ -f "$excess_file" ]; then
+        local file_size=$(stat -c%s "$excess_file" 2>/dev/null || echo "0")
+        rm -f "$excess_file"
+        ((removed_files++))
+        freed_space=$((freed_space + file_size))
+        echo "   🗑️  Removed: $(basename "$excess_file")"
+      fi
+    done <<< "$excess_files"
+  fi
+
+  # 結果表示
+  echo ""
+  echo "📊 Cleanup Results:"
+  local after_count=$(ls -1 "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | wc -l)
+  local after_size=$(du -bc "$backup_dir"/wireguard_backup_*.tar.gz 2>/dev/null | tail -n1 | cut -f1 2>/dev/null || echo "0")
+
+  echo "   Files removed: $removed_files"
+  echo "   Remaining files: $after_count"
+
+  if [ "$freed_space" -gt 0 ]; then
+    if command -v numfmt >/dev/null 2>&1; then
+      echo "   Space freed: $(numfmt --to=iec-i --suffix=B "$freed_space")"
+    else
+      echo "   Space freed: ${freed_space}B"
+    fi
+  fi
+
+  if [ "$after_count" -eq 0 ]; then
+    echo ""
+    echo "⚠️  All backup files have been removed!"
+    echo "💡 Consider creating a new backup: $0 backup"
+  fi
+
+  echo ""
+  echo "✅ Backup cleanup completed"
+}
+
 restore_config() {
   local backup_file=$1
 
@@ -1806,6 +2113,222 @@ restore_config() {
     echo ""
     echo "🛡️ If something goes wrong, you can restore from: $emergency_backup"
   fi
+}
+
+analyze_logs() {
+  local args=("$@")
+  local since="1h"
+  local level=""
+  local client=""
+  local follow=false
+  local summary=false
+
+  # 引数の解析
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --since)
+        since="$2"
+        shift 2
+        ;;
+      --level)
+        level="$2"
+        shift 2
+        ;;
+      --client)
+        client="$2"
+        shift 2
+        ;;
+      --follow)
+        follow=true
+        shift
+        ;;
+      --summary)
+        summary=true
+        shift
+        ;;
+      *)
+        echo "❌ Unknown option: $1"
+        echo "Use '$0 logs' for help"
+        return 1
+        ;;
+    esac
+  done
+
+  if [ "$summary" = true ]; then
+    show_log_summary "$since"
+    return 0
+  fi
+
+  echo "=== WireGuard Logs ==="
+  echo ""
+
+  # journalctlが利用可能か確認
+  if ! command -v journalctl >/dev/null 2>&1; then
+    echo "❌ journalctl not available. Cannot analyze logs."
+    return 1
+  fi
+
+  # ログ取得コマンドの構築
+  local journal_cmd="journalctl -u wg-quick@wg0 --no-pager -q"
+
+  # 時間指定
+  if [ -n "$since" ]; then
+    journal_cmd="$journal_cmd --since '$since'"
+  fi
+
+  # リアルタイム監視
+  if [ "$follow" = true ]; then
+    journal_cmd="$journal_cmd -f"
+    echo "📊 Following WireGuard logs (Ctrl+C to stop)..."
+    echo ""
+  fi
+
+  # ログの取得と処理
+  if [ "$follow" = true ]; then
+    # リアルタイム監視モード
+    eval "$journal_cmd" | while IFS= read -r line; do
+      format_log_entry "$line" "$level" "$client"
+    done
+  else
+    # 通常のログ表示
+    local log_count=0
+    while IFS= read -r line; do
+      if format_log_entry "$line" "$level" "$client"; then
+        ((log_count++))
+      fi
+    done < <(eval "$journal_cmd")
+
+    echo ""
+    echo "📊 Total log entries shown: $log_count"
+  fi
+}
+
+show_log_summary() {
+  local since="${1:-1h}"
+
+  echo "=== WireGuard Log Summary ==="
+  echo "Period: Last $since"
+  echo ""
+
+  if ! command -v journalctl >/dev/null 2>&1; then
+    echo "❌ journalctl not available."
+    return 1
+  fi
+
+  # ログ統計の取得
+  local total_logs=$(journalctl -u wg-quick@wg0 --since "$since" --no-pager -q | wc -l)
+  local error_logs=$(journalctl -u wg-quick@wg0 --since "$since" --no-pager -q | grep -i "error\|fail\|failed" | wc -l)
+  local warning_logs=$(journalctl -u wg-quick@wg0 --since "$since" --no-pager -q | grep -i "warning\|warn" | wc -l)
+
+  echo "📊 Log Statistics:"
+  echo "   Total entries: $total_logs"
+  echo "   Error logs: $error_logs"
+  echo "   Warning logs: $warning_logs"
+  echo "   Info logs: $((total_logs - error_logs - warning_logs))"
+  echo ""
+
+  # エラーレート計算
+  if [ "$total_logs" -gt 0 ]; then
+    local error_rate=$((error_logs * 100 / total_logs))
+    local warning_rate=$((warning_logs * 100 / total_logs))
+
+    echo "📈 Error Rates:"
+    echo "   Error rate: ${error_rate}%"
+    echo "   Warning rate: ${warning_rate}%"
+    echo ""
+  fi
+
+  # クライアント別接続イベント
+  echo "👥 Connection Events:"
+  local handshake_count=$(journalctl -u wg-quick@wg0 --since "$since" --no-pager -q | grep -i "handshake\|peer" | wc -l)
+  echo "   Handshake events: $handshake_count"
+
+  # 最もアクティブな時間帯
+  echo ""
+  echo "⏰ Most Active Hours:"
+  journalctl -u wg-quick@wg0 --since "$since" --no-pager -q | \
+    awk '{print $3}' | cut -d':' -f1 | sort | uniq -c | sort -nr | head -5 | \
+    while read count hour; do
+      echo "   $hour:00: $count entries"
+    done
+
+  # 最近のエラー（最大5件）
+  if [ "$error_logs" -gt 0 ]; then
+    echo ""
+    echo "🚨 Recent Errors:"
+    journalctl -u wg-quick@wg0 --since "$since" --no-pager -q | \
+      grep -i "error\|fail\|failed" | tail -5 | \
+      while IFS= read -r line; do
+        echo "   $(date -d "$(echo "$line" | awk '{print $1, $2, $3}')" '+%m/%d %H:%M') - $(echo "$line" | cut -d' ' -f5-)"
+      done
+  fi
+
+  # パフォーマンスメトリクス
+  echo ""
+  echo "⚡ Performance Insights:"
+  local service_restarts=$(journalctl -u wg-quick@wg0 --since "$since" --no-pager -q | grep -i "start\|restart" | wc -l)
+  echo "   Service restarts: $service_restarts"
+
+  # ログサイズ推定
+  local log_size=$(journalctl -u wg-quick@wg0 --since "$since" --no-pager -q | wc -c)
+  echo "   Log data size: $(bytes_to_human $log_size)"
+}
+
+format_log_entry() {
+  local line="$1"
+  local filter_level="$2"
+  local filter_client="$3"
+
+  # ログレベルの判定
+  local log_level="info"
+  if echo "$line" | grep -qi "error\|fail\|failed"; then
+    log_level="error"
+  elif echo "$line" | grep -qi "warning\|warn"; then
+    log_level="warning"
+  fi
+
+  # レベルフィルタ
+  if [ -n "$filter_level" ] && [ "$log_level" != "$filter_level" ]; then
+    return 1
+  fi
+
+  # クライアントフィルタ
+  if [ -n "$filter_client" ]; then
+    if ! echo "$line" | grep -qi "$filter_client"; then
+      return 1
+    fi
+  fi
+
+  # ログのフォーマット
+  local timestamp=$(echo "$line" | awk '{print $1, $2, $3}')
+  local hostname=$(echo "$line" | awk '{print $4}')
+  local service=$(echo "$line" | awk '{print $5}')
+  local message=$(echo "$line" | cut -d' ' -f6-)
+
+  # ログレベルの絵文字
+  local level_emoji=""
+  case $log_level in
+    "error") level_emoji="❌" ;;
+    "warning") level_emoji="⚠️" ;;
+    *) level_emoji="ℹ️" ;;
+  esac
+
+  # フォーマット済みログの出力
+  echo "$level_emoji $(date -d "$timestamp" '+%m/%d %H:%M:%S') $message"
+  return 0
+}
+
+parse_log_time() {
+  local time_spec="$1"
+
+  # 時間指定の正規化
+  case $time_spec in
+    *h) echo "${time_spec}" ;;
+    *d) echo "${time_spec}" ;;
+    *m) echo "${time_spec}" ;;
+    *s) echo "${time_spec}" ;;
+    *) echo "${time_spec}h" ;;  # デフォルトは時間
+  esac
 }
 
 show_status() {
@@ -1944,10 +2467,14 @@ case "$CMD" in
   validate) [[ $# -ne 0 ]] && usage; validate_config ;;
   health) [[ $# -ne 0 ]] && usage; health_check ;;
   stats) [[ $# -gt 1 ]] && usage; show_stats "$1" ;;
+  logs) analyze_logs "$@" ;;
   export) [[ $# -ne 1 ]] && usage; export_client "$1" ;;
   import) [[ $# -ne 1 ]] && usage; import_client "$1" ;;
   backup) [[ $# -ne 0 ]] && usage; backup_config ;;
   restore) [[ $# -ne 1 ]] && usage; restore_config "$1" ;;
+  schedule) [[ $# -ne 1 ]] && usage; schedule_backup "$1" ;;
+  backup-list) [[ $# -ne 0 ]] && usage; list_backups ;;
+  backup-cleanup) [[ $# -ne 0 ]] && usage; cleanup_backups ;;
   status) [[ $# -ne 0 ]] && usage; show_status ;;
   start) [[ $# -ne 0 ]] && usage; start_service ;;
   stop) [[ $# -ne 0 ]] && usage; stop_service ;;
