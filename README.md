@@ -72,6 +72,76 @@ sudo ./wireguard_manager.sh del <クライアント名>
 sudo ./wireguard_manager.sh del client1
 ```
 
+### 4. クライアント一覧の表示
+
+```bash
+sudo ./wireguard_manager.sh list
+```
+
+**例:**
+```bash
+sudo ./wireguard_manager.sh list
+```
+
+**表示内容:**
+- クライアント名
+- VPN IPアドレス
+- 設定ファイルの有無
+- QRコードファイルの有無
+- 鍵ファイルの有無
+- 総クライアント数
+
+### 5. 接続中クライアントの一覧表示
+
+```bash
+sudo ./wireguard_manager.sh connected
+```
+
+**例:**
+```bash
+sudo ./wireguard_manager.sh connected
+```
+
+**表示内容:**
+- 接続中のクライアント名
+- 🌐 エンドポイント（接続元IP:ポート）
+- ⏰ 最終ハンドシェイク時間
+- 📊 トラフィック情報（送受信バイト数）
+- 🟢 接続状態
+- 登録されていないピアの警告表示
+- 接続中のクライアント数と総数のサマリー
+
+### 6. サービスステータスの確認
+
+```bash
+sudo ./wireguard_manager.sh status
+```
+
+**表示内容:**
+- サービス状態（実行中/停止中）
+- インターフェース状態
+- 接続中のピア情報
+- トラフィック統計
+- 最新のログ
+
+### 6. サービスの起動
+
+```bash
+sudo ./wireguard_manager.sh start
+```
+
+### 7. サービスの停止
+
+```bash
+sudo ./wireguard_manager.sh stop
+```
+
+### 8. サービスのリスタート
+
+```bash
+sudo ./wireguard_manager.sh restart
+```
+
 ## 設定
 
 ### デフォルトの許可IP変更
@@ -133,16 +203,22 @@ ALLOWED_IPS="10.1.0.0/24,192.168.1.0/24"
 ### サービス管理
 
 ```bash
-# サービスの状態確認
-sudo systemctl status wg-quick@wg0
-
-# サービスの停止
-sudo systemctl stop wg-quick@wg0
+# サービスの状態確認（詳細情報表示）
+sudo ./wireguard_manager.sh status
 
 # サービスの起動
-sudo systemctl start wg-quick@wg0
+sudo ./wireguard_manager.sh start
+
+# サービスの停止
+sudo ./wireguard_manager.sh stop
 
 # サービスの再起動
+sudo ./wireguard_manager.sh restart
+
+# 従来のsystemctlコマンドも使用可能
+sudo systemctl status wg-quick@wg0
+sudo systemctl stop wg-quick@wg0
+sudo systemctl start wg-quick@wg0
 sudo systemctl restart wg-quick@wg0
 ```
 
