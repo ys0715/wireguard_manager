@@ -126,6 +126,11 @@ usage() {
   echo "  $0 del <wg-name>                          - Delete client"
   echo "  $0 list                                    - List all registered clients"
   echo "  $0 connected                               - List currently connected clients"
+  echo "  $0 enable <wg-name>                        - Enable client"
+  echo "  $0 disable <wg-name>                       - Disable client"
+  echo "  $0 validate                                - Validate WireGuard configuration"
+  echo "  $0 health                                  - Comprehensive health check"
+  echo "  $0 stats [client-name]                     - Show detailed statistics"
   echo "  $0 status                                  - Show WireGuard service status"
   echo "  $0 start                                   - Start WireGuard service"
   echo "  $0 stop                                    - Stop WireGuard service"
@@ -137,6 +142,12 @@ usage() {
   echo "  $0 add client2 20 \"10.0.0.0/16,172.31.0.0/20\""
   echo "  $0 list                                   - Show all clients"
   echo "  $0 connected                              - Show connected clients"
+  echo "  $0 enable client1                          - Enable client1"
+  echo "  $0 disable client1                         - Disable client1"
+  echo "  $0 validate                               - Validate configuration"
+  echo "  $0 health                                 - Full health check"
+  echo "  $0 stats                                  - Show overall statistics"
+  echo "  $0 stats client1                           - Show client1 statistics"
   echo "  $0 del client1                             - Delete client1"
   echo "  $0 status                                 - Show current status"
   echo ""
@@ -405,6 +416,120 @@ delete_client() {
   echo "Client ${WG_NAME} deleted."
 }
 
+enable_client() {
+  local WG_NAME=$1
+
+  if [ ! -f /etc/wireguard/wg0.conf ]; then
+    echo "Error: WireGuard is not initialized. Run 'init' first."
+    exit 1
+  fi
+
+  # クライアントが存在するか確認
+  if ! grep -q "^### ${WG_NAME}$" /etc/wireguard/wg0.conf; then
+    echo "Error: Client '${WG_NAME}' not found."
+    exit 1
+  fi
+
+  echo "Enabling client: ${WG_NAME}"
+
+  # クライアントのセクションを有効化（コメントを外す）
+  local temp_file=$(mktemp)
+  local in_client_section=false
+  local modified=false
+
+  while IFS= read -r line; do
+    if [[ $line =~ ^###\ ${WG_NAME}$ ]]; then
+      # クライアントセクションの開始
+      echo "$line" >> "$temp_file"
+      in_client_section=true
+    elif [[ $line =~ ^###\ .* ]] && [[ $in_client_section == true ]]; then
+      # 次のクライアントセクションの開始
+      in_client_section=false
+      echo "$line" >> "$temp_file"
+    elif [[ $in_client_section == true ]] && [[ $line =~ ^#\s*(\[Peer\]|\w+\s*=) ]]; then
+      # コメントアウトされた行をアンコメント
+      echo "${line//#}" >> "$temp_file"
+      modified=true
+    else
+      echo "$line" >> "$temp_file"
+    fi
+  done < /etc/wireguard/wg0.conf
+
+  # 変更があった場合のみファイルを更新
+  if [[ $modified == true ]]; then
+    mv "$temp_file" /etc/wireguard/wg0.conf
+    echo "✅ Client ${WG_NAME} has been enabled."
+
+    # サービスが実行中の場合は再読み込み
+    if systemctl is-active --quiet wg-quick@wg0; then
+      wg syncconf wg0 <(wg-quick strip wg0)
+      echo "🔄 WireGuard configuration reloaded."
+    fi
+  else
+    rm "$temp_file"
+    echo "ℹ️  Client ${WG_NAME} is already enabled."
+  fi
+}
+
+disable_client() {
+  local WG_NAME=$1
+
+  if [ ! -f /etc/wireguard/wg0.conf ]; then
+    echo "Error: WireGuard is not initialized. Run 'init' first."
+    exit 1
+  fi
+
+  # クライアントが存在するか確認
+  if ! grep -q "^### ${WG_NAME}$" /etc/wireguard/wg0.conf; then
+    echo "Error: Client '${WG_NAME}' not found."
+    exit 1
+  fi
+
+  echo "Disabling client: ${WG_NAME}"
+
+  # クライアントのセクションを無効化（コメントアウト）
+  local temp_file=$(mktemp)
+  local in_client_section=false
+  local modified=false
+
+  while IFS= read -r line; do
+    if [[ $line =~ ^###\ ${WG_NAME}$ ]]; then
+      # クライアントセクションの開始
+      echo "$line" >> "$temp_file"
+      in_client_section=true
+    elif [[ $line =~ ^###\ .* ]] && [[ $in_client_section == true ]]; then
+      # 次のクライアントセクションの開始
+      in_client_section=false
+      echo "$line" >> "$temp_file"
+    elif [[ $in_client_section == true ]] && [[ $line =~ ^\[Peer\] ]] && [[ $line != "#"* ]]; then
+      # [Peer]セクションをコメントアウト
+      echo "#$line" >> "$temp_file"
+      modified=true
+    elif [[ $in_client_section == true ]] && [[ $line =~ ^\w+\s*= ]] && [[ $line != "#"* ]]; then
+      # Peerセクション内の設定行をコメントアウト
+      echo "#$line" >> "$temp_file"
+      modified=true
+    else
+      echo "$line" >> "$temp_file"
+    fi
+  done < /etc/wireguard/wg0.conf
+
+  # 変更があった場合のみファイルを更新
+  if [[ $modified == true ]]; then
+    mv "$temp_file" /etc/wireguard/wg0.conf
+    echo "✅ Client ${WG_NAME} has been disabled."
+
+    # サービスが実行中の場合は再読み込み
+    if systemctl is-active --quiet wg-quick@wg0; then
+      wg syncconf wg0 <(wg-quick strip wg0)
+      echo "🔄 WireGuard configuration reloaded."
+    fi
+  else
+    rm "$temp_file"
+    echo "ℹ️  Client ${WG_NAME} is already disabled."
+  fi
+}
+
 list_clients() {
   if [ ! -f /etc/wireguard/wg0.conf ]; then
     echo "Error: WireGuard is not initialized. Run 'init' first."
@@ -462,6 +587,13 @@ display_client_info() {
   echo "Client: $client_name"
   echo "  VPN IP: $allowed_ips"
 
+  # クライアントの有効/無効状態を確認
+  if grep -A 10 "^### ${client_name}$" /etc/wireguard/wg0.conf | grep -q "^#\[Peer\]"; then
+    echo "  Status: 🔴 Disabled"
+  else
+    echo "  Status: 🟢 Enabled"
+  fi
+
   # クライアント設定ファイルの存在確認
   local conf_file="$HOMEDIR/wireguard/conf/${client_name}.conf"
   if [ -f "$conf_file" ]; then
@@ -487,6 +619,275 @@ display_client_info() {
   fi
 
   echo ""
+}
+
+validate_config() {
+  echo "=== WireGuard Configuration Validation ==="
+  echo ""
+
+  local errors=0
+  local warnings=0
+
+  # 1. 設定ファイルの存在確認
+  if [ ! -f /etc/wireguard/wg0.conf ]; then
+    echo "❌ ERROR: WireGuard configuration file not found at /etc/wireguard/wg0.conf"
+    echo "   Run 'init' command to initialize WireGuard server."
+    return 1
+  fi
+  echo "✅ Configuration file exists: /etc/wireguard/wg0.conf"
+
+  # 2. 設定ファイルの構文チェック
+  if ! wg-quick check wg0 2>/dev/null; then
+    echo "❌ ERROR: Configuration file has syntax errors"
+    ((errors++))
+  else
+    echo "✅ Configuration syntax is valid"
+  fi
+
+  # 3. サーバー設定の検証
+  local server_private_key="/etc/wireguard/keys/server.prv"
+  local server_public_key="/etc/wireguard/keys/server.pub"
+
+  if [ ! -f "$server_private_key" ]; then
+    echo "❌ ERROR: Server private key not found: $server_private_key"
+    ((errors++))
+  else
+    echo "✅ Server private key exists"
+  fi
+
+  if [ ! -f "$server_public_key" ]; then
+    echo "❌ ERROR: Server public key not found: $server_public_key"
+    ((errors++))
+  else
+    echo "✅ Server public key exists"
+  fi
+
+  # 4. IPアドレスの重複チェック
+  declare -A used_ips
+  local current_client=""
+  local duplicate_ips=()
+
+  while IFS= read -r line; do
+    # クライアントセクションの開始を検出
+    if [[ $line =~ ^###\ (.+)$ ]]; then
+      current_client="${BASH_REMATCH[1]}"
+    elif [[ $line =~ ^AllowedIPs\ =\ ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+      local ip="${BASH_REMATCH[1]}"
+      if [[ ${used_ips[$ip]} ]]; then
+        duplicate_ips+=("$ip (used by ${used_ips[$ip]} and $current_client)")
+      else
+        used_ips[$ip]="$current_client"
+      fi
+    fi
+  done < /etc/wireguard/wg0.conf
+
+  if [ ${#duplicate_ips[@]} -gt 0 ]; then
+    echo "❌ ERROR: Duplicate IP addresses found:"
+    for dup in "${duplicate_ips[@]}"; do
+      echo "   - $dup"
+    done
+    ((errors++))
+  else
+    echo "✅ No duplicate IP addresses found"
+  fi
+
+  # 5. ポートの競合チェック
+  local listen_port=$(grep "^ListenPort" /etc/wireguard/wg0.conf | cut -d' ' -f3)
+  if [ -n "$listen_port" ]; then
+    if netstat -tuln 2>/dev/null | grep -q ":$listen_port "; then
+      echo "⚠️  WARNING: Port $listen_port is already in use by another service"
+      ((warnings++))
+    else
+      echo "✅ Listen port $listen_port is available"
+    fi
+  fi
+
+  # 6. クライアント設定ファイルの整合性チェック
+  local client_count=0
+  local missing_configs=()
+
+  while IFS= read -r line; do
+    if [[ $line =~ ^###\ (.+)$ ]]; then
+      local client_name="${BASH_REMATCH[1]}"
+      local config_file="$HOMEDIR/wireguard/conf/${client_name}.conf"
+      local priv_key_file="/etc/wireguard/keys/${client_name}.prv"
+      local pub_key_file="/etc/wireguard/keys/${client_name}.pub"
+
+      ((client_count++))
+
+      if [ ! -f "$config_file" ]; then
+        missing_configs+=("$client_name: config file")
+      fi
+      if [ ! -f "$priv_key_file" ]; then
+        missing_configs+=("$client_name: private key")
+      fi
+      if [ ! -f "$pub_key_file" ]; then
+        missing_configs+=("$client_name: public key")
+      fi
+    fi
+  done < /etc/wireguard/wg0.conf
+
+  if [ ${#missing_configs[@]} -gt 0 ]; then
+    echo "❌ ERROR: Missing client files:"
+    for missing in "${missing_configs[@]}"; do
+      echo "   - $missing"
+    done
+    ((errors++))
+  else
+    echo "✅ All client configuration files exist"
+  fi
+
+  # 7. ファイアウォール設定の確認
+  if command -v ufw >/dev/null 2>&1; then
+    if ufw status 2>/dev/null | grep -q "Status: active"; then
+      if [ -n "$listen_port" ] && ! ufw status 2>/dev/null | grep -q "$listen_port"; then
+        echo "⚠️  WARNING: UFW is active but WireGuard port $listen_port is not allowed"
+        ((warnings++))
+      else
+        echo "✅ Firewall (UFW) configuration looks good"
+      fi
+    fi
+  elif command -v firewall-cmd >/dev/null 2>&1; then
+    if firewall-cmd --state 2>/dev/null | grep -q "running"; then
+      echo "ℹ️  FirewallD is active - manual port configuration may be required"
+    fi
+  fi
+
+  # 結果表示
+  echo ""
+  echo "=== Validation Results ==="
+  echo "Clients found: $client_count"
+  if [ $errors -gt 0 ]; then
+    echo "❌ Errors: $errors"
+  else
+    echo "✅ Errors: 0"
+  fi
+  if [ $warnings -gt 0 ]; then
+    echo "⚠️  Warnings: $warnings"
+  else
+    echo "✅ Warnings: 0"
+  fi
+
+  if [ $errors -gt 0 ]; then
+    echo ""
+    echo "🔧 Fix the errors above before using WireGuard."
+    return 1
+  else
+    echo ""
+    echo "🎉 Configuration validation passed!"
+    return 0
+  fi
+}
+
+health_check() {
+  echo "=== WireGuard Health Check ==="
+  echo ""
+
+  local issues=0
+
+  # 1. 基本的な設定検証を実行
+  if ! validate_config >/dev/null 2>&1; then
+    echo "❌ CRITICAL: Configuration validation failed"
+    ((issues++))
+  else
+    echo "✅ Configuration validation passed"
+  fi
+
+  # 2. サービス状態の確認
+  if systemctl is-active --quiet wg-quick@wg0; then
+    echo "✅ WireGuard service is running"
+  else
+    echo "❌ CRITICAL: WireGuard service is not running"
+    ((issues++))
+  fi
+
+  # 3. インターフェース状態の確認
+  if ip link show wg0 >/dev/null 2>&1; then
+    echo "✅ WireGuard interface wg0 exists"
+
+    local wg_ip=$(ip addr show wg0 | grep -o 'inet [0-9.]*' | cut -d' ' -f2)
+    if [ -n "$wg_ip" ]; then
+      echo "✅ Interface has IP address: $wg_ip"
+    else
+      echo "❌ ERROR: Interface wg0 has no IP address"
+      ((issues++))
+    fi
+  else
+    echo "❌ CRITICAL: WireGuard interface wg0 does not exist"
+    ((issues++))
+  fi
+
+  # 4. 接続テスト
+  if command -v wg >/dev/null 2>&1 && ip link show wg0 >/dev/null 2>&1; then
+    local peer_count=$(wg show wg0 peers | wc -l)
+    echo "ℹ️  Configured peers: $peer_count"
+
+    # 最近のハンドシェイクがあるピアの数をカウント
+    local active_peers=0
+    while IFS= read -r peer; do
+      if [ -n "$peer" ]; then
+        local handshake=$(wg show wg0 peer "$peer" 2>/dev/null | grep "latest handshake" | sed 's/.*latest handshake: //' | sed 's/ ago//')
+        if [ -n "$handshake" ]; then
+          # 24時間以内のハンドシェイクをアクティブとみなす
+          if [[ $handshake == *"second"* ]] || [[ $handshake == *"minute"* ]] || [[ $handshake == *"hour"* ]]; then
+            ((active_peers++))
+          fi
+        fi
+      fi
+    done <<< "$(wg show wg0 peers 2>/dev/null)"
+
+    echo "ℹ️  Recently active peers (24h): $active_peers"
+  fi
+
+  # 5. リソース使用状況の確認
+  if ip link show wg0 >/dev/null 2>&1; then
+    local rx_bytes=$(ip -s link show wg0 | grep -A1 "RX:" | tail -n1 | awk '{print $1}')
+    local tx_bytes=$(ip -s link show wg0 | grep -A1 "TX:" | tail -n1 | awk '{print $1}')
+
+    if [ -n "$rx_bytes" ] && [ -n "$tx_bytes" ]; then
+      echo "📊 Traffic: RX $(numfmt --to=iec-i --suffix=B $rx_bytes 2>/dev/null || echo "${rx_bytes}B"), TX $(numfmt --to=iec-i --suffix=B $tx_bytes 2>/dev/null || echo "${tx_bytes}B")"
+    fi
+  fi
+
+  # 6. ログエラーの確認
+  if command -v journalctl >/dev/null 2>&1; then
+    local error_count=$(journalctl -u wg-quick@wg0 --since "1 hour ago" -q 2>/dev/null | grep -i "error\|failed\|fail" | wc -l)
+    if [ "$error_count" -gt 0 ]; then
+      echo "⚠️  Recent errors in logs: $error_count"
+      ((issues++))
+    else
+      echo "✅ No recent errors in service logs"
+    fi
+  fi
+
+  # 7. システムリソースの確認
+  local mem_usage=$(free | grep Mem | awk '{printf "%.1f", $3/$2 * 100.0}')
+  local cpu_load=$(uptime | awk -F'load average:' '{ print $2 }' | cut -d',' -f1 | xargs)
+
+  echo "🖥️  System: CPU load $cpu_load, Memory ${mem_usage}%"
+
+  if (( $(echo "$mem_usage > 90" | bc -l 2>/dev/null || echo "0") )); then
+    echo "⚠️  WARNING: High memory usage detected"
+    ((issues++))
+  fi
+
+  if (( $(echo "$cpu_load > $(nproc)" | bc -l 2>/dev/null || echo "0") )); then
+    echo "⚠️  WARNING: High CPU load detected"
+    ((issues++))
+  fi
+
+  # 結果表示
+  echo ""
+  echo "=== Health Check Results ==="
+  if [ $issues -gt 0 ]; then
+    echo "❌ Issues found: $issues"
+    echo ""
+    echo "🔧 Address the issues above to ensure optimal WireGuard performance."
+    return 1
+  else
+    echo "🎉 All health checks passed!"
+    return 0
+  fi
 }
 
 list_connected_clients() {
@@ -548,6 +949,13 @@ list_connected_clients() {
           echo "Client: $client_name"
           echo "  VPN IP: $client_ip"
 
+          # クライアントの設定状態を確認
+          if grep -A 10 "^### ${client_name}$" /etc/wireguard/wg0.conf | grep -q "^#\[Peer\]"; then
+            echo "  ⚙️  Config Status: 🔴 Disabled"
+          else
+            echo "  ⚙️  Config Status: 🟢 Enabled"
+          fi
+
           # ピアの詳細情報を取得
           local peer_info=$(wg show wg0 peer "$peer_pubkey" 2>/dev/null)
           if [ $? -eq 0 ] && [ -n "$peer_info" ]; then
@@ -569,10 +977,10 @@ list_connected_clients() {
               echo "  📊 Transfer: $transfer"
             fi
 
-            echo "  🟢 Status: Connected"
+            echo "  🟢 Connection Status: Connected"
             ((connected_count++))
           else
-            echo "  🔴 Status: Disconnected"
+            echo "  🔴 Connection Status: Disconnected"
           fi
         else
           # 登録されていないピアの場合
@@ -598,6 +1006,328 @@ list_connected_clients() {
   else
     echo "❌ WireGuard interface is not active or wg command not available."
     echo "   Run 'status' command to check service state."
+  fi
+}
+
+show_stats() {
+  local client_name=$1
+
+  if [ ! -f /etc/wireguard/wg0.conf ]; then
+    echo "Error: WireGuard is not initialized. Run 'init' first."
+    exit 1
+  fi
+
+  if [ -n "$client_name" ]; then
+    # 個別クライアントの統計を表示
+    show_client_stats "$client_name"
+  else
+    # 全体統計を表示
+    show_overall_stats
+  fi
+}
+
+show_overall_stats() {
+  echo "=== WireGuard Overall Statistics ==="
+  echo ""
+
+  if ! ip link show wg0 >/dev/null 2>&1; then
+    echo "❌ WireGuard interface is not active."
+    return 1
+  fi
+
+  # インターフェースの基本情報
+  local wg_ip=$(ip addr show wg0 | grep -o 'inet [0-9.]*' | cut -d' ' -f2)
+  local mtu=$(ip link show wg0 | grep -o 'mtu [0-9]*' | cut -d' ' -f2)
+  local listen_port=$(grep "^ListenPort" /etc/wireguard/wg0.conf | cut -d' ' -f3)
+
+  echo "🌐 Interface Information:"
+  echo "   IP Address: $wg_ip"
+  echo "   MTU: $mtu"
+  echo "   Listen Port: ${listen_port:-Unknown}"
+  echo ""
+
+  # インターフェースのトラフィック統計
+  if command -v ip >/dev/null 2>&1; then
+    echo "📊 Interface Traffic Statistics:"
+    local rx_bytes=$(ip -s link show wg0 | grep "RX:" | tail -n1 | awk '{print $1}')
+    local tx_bytes=$(ip -s link show wg0 | grep "TX:" | tail -n1 | awk '{print $1}')
+
+    if [ -n "$rx_bytes" ] && [ -n "$tx_bytes" ]; then
+      echo "   Received: $(numfmt --to=iec-i --suffix=B $rx_bytes 2>/dev/null || echo "${rx_bytes}B")"
+      echo "   Sent: $(numfmt --to=iec-i --suffix=B $tx_bytes 2>/dev/null || echo "${tx_bytes}B")"
+      echo "   Total: $(numfmt --to=iec-i --suffix=B $((rx_bytes + tx_bytes)) 2>/dev/null || echo "$((rx_bytes + tx_bytes))B")"
+    fi
+    echo ""
+  fi
+
+  # クライアント統計の集計
+  if command -v wg >/dev/null 2>&1; then
+    echo "👥 Client Statistics Summary:"
+    local total_clients=0
+    local connected_clients=0
+    local total_rx=0
+    local total_tx=0
+
+    # クライアント名と公開鍵のマッピングを取得
+    declare -A client_map
+    local current_client=""
+    while IFS= read -r line; do
+      if [[ $line =~ ^###\ (.+)$ ]]; then
+        current_client="${BASH_REMATCH[1]}"
+      elif [[ $line =~ ^PublicKey\ =\ (.+)$ ]] && [ -n "$current_client" ]; then
+        client_map["${BASH_REMATCH[1]}"]="$current_client"
+      fi
+    done < /etc/wireguard/wg0.conf
+
+    total_clients=${#client_map[@]}
+
+    # 各ピアの統計を集計
+    while IFS= read -r peer; do
+      if [ -n "$peer" ]; then
+        local peer_info=$(wg show wg0 peer "$peer" 2>/dev/null)
+        if [ $? -eq 0 ] && [ -n "$peer_info" ]; then
+          # トラフィック情報を取得
+          local rx_line=$(echo "$peer_info" | grep "transfer:" | sed 's/.*transfer: //' | sed 's/ received.*//')
+          local tx_line=$(echo "$peer_info" | grep "transfer:" | sed 's/.*transfer: //' | sed 's/.*received, //' | sed 's/ sent.*//')
+
+          if [ -n "$rx_line" ]; then
+            # 数値のみを抽出（例: "1.23 MiB" -> "1230000")
+            local rx_bytes=$(echo "$rx_line" | sed 's/[^0-9.]*//g')
+            local rx_unit=$(echo "$rx_line" | sed 's/[0-9.]*//g' | tr -d ' ')
+            total_rx=$((total_rx + $(convert_to_bytes "$rx_bytes" "$rx_unit")))
+          fi
+
+          if [ -n "$tx_line" ]; then
+            local tx_bytes=$(echo "$tx_line" | sed 's/[^0-9.]*//g')
+            local tx_unit=$(echo "$tx_line" | sed 's/[0-9.]*//g' | tr -d ' ')
+            total_tx=$((total_tx + $(convert_to_bytes "$tx_bytes" "$tx_unit")))
+          fi
+
+          ((connected_clients++))
+        fi
+      fi
+    done <<< "$(wg show wg0 peers 2>/dev/null)"
+
+    echo "   Total Clients: $total_clients"
+    echo "   Connected Clients: $connected_clients"
+    echo "   Disconnected Clients: $((total_clients - connected_clients))"
+    echo ""
+
+    if [ $connected_clients -gt 0 ]; then
+      echo "📈 Total Client Traffic:"
+      echo "   Total Received: $(bytes_to_human $total_rx)"
+      echo "   Total Sent: $(bytes_to_human $total_tx)"
+      echo "   Total Traffic: $(bytes_to_human $((total_rx + total_tx)))"
+      echo ""
+
+      echo "📊 Per-Client Average:"
+      echo "   Average Received: $(bytes_to_human $((total_rx / connected_clients)))"
+      echo "   Average Sent: $(bytes_to_human $((total_tx / connected_clients)))"
+    fi
+  fi
+
+  # システム情報
+  echo ""
+  echo "💻 System Information:"
+  local uptime=$(uptime -p 2>/dev/null || uptime | awk -F'up ' '{print $2}' | awk -F',' '{print $1}')
+  local load_avg=$(uptime | awk -F'load average:' '{print $2}' | cut -d',' -f1 | xargs)
+  echo "   System Uptime: ${uptime:-Unknown}"
+  echo "   Load Average: ${load_avg:-Unknown}"
+
+  # WireGuardサービスの稼働時間
+  if systemctl is-active --quiet wg-quick@wg0; then
+    local service_uptime=$(systemctl show wg-quick@wg0 -p ActiveEnterTimestamp | cut -d'=' -f2)
+    if [ -n "$service_uptime" ]; then
+      echo "   WireGuard Service Uptime: $(date -d "$service_uptime" '+%Y-%m-%d %H:%M:%S')"
+    fi
+  fi
+}
+
+show_client_stats() {
+  local client_name=$1
+
+  echo "=== Statistics for Client: $client_name ==="
+  echo ""
+
+  # クライアントが存在するか確認
+  if ! grep -q "^### ${client_name}$" /etc/wireguard/wg0.conf; then
+    echo "❌ Error: Client '$client_name' not found."
+    return 1
+  fi
+
+  # クライアントの設定情報を取得
+  local client_pubkey=""
+  local client_ip=""
+  local client_allowed_ips=""
+
+  local in_client_section=false
+  while IFS= read -r line; do
+    if [[ $line =~ ^###\ ${client_name}$ ]]; then
+      in_client_section=true
+    elif [[ $line =~ ^###\ .* ]] && [[ $in_client_section == true ]]; then
+      break
+    elif [[ $in_client_section == true ]]; then
+      if [[ $line =~ ^PublicKey\ =\ (.+)$ ]]; then
+        client_pubkey="${BASH_REMATCH[1]}"
+      elif [[ $line =~ ^AllowedIPs\ =\ (.+)$ ]]; then
+        client_ip="${BASH_REMATCH[1]}"
+        client_allowed_ips="$line"
+      fi
+    fi
+  done < /etc/wireguard/wg0.conf
+
+  # 基本情報表示
+  echo "👤 Client Information:"
+  echo "   Name: $client_name"
+  echo "   VPN IP: ${client_ip:-Unknown}"
+  echo "   Public Key: ${client_pubkey:0:16}..."
+  echo ""
+
+  # WireGuardピア情報を取得
+  if [ -n "$client_pubkey" ] && command -v wg >/dev/null 2>&1 && ip link show wg0 >/dev/null 2>&1; then
+    local peer_info=$(wg show wg0 peer "$client_pubkey" 2>/dev/null)
+
+    if [ $? -eq 0 ] && [ -n "$peer_info" ]; then
+      echo "🔗 Connection Status: Connected"
+      echo ""
+
+      # エンドポイント情報
+      local endpoint=$(echo "$peer_info" | grep "endpoint:" | sed 's/.*endpoint: //' | sed 's/ //g')
+      if [ -n "$endpoint" ]; then
+        echo "🌐 Endpoint: $endpoint"
+      fi
+
+      # 最終ハンドシェイク
+      local handshake=$(echo "$peer_info" | grep "latest handshake:" | sed 's/.*latest handshake: //' | sed 's/ //g')
+      if [ -n "$handshake" ]; then
+        echo "⏰ Last Handshake: $handshake ago"
+
+        # 接続時間の計算（概算）
+        local connection_time=""
+        if [[ $handshake == *"second"* ]]; then
+          local seconds=$(echo "$handshake" | sed 's/[^0-9]*//g')
+          if [ "$seconds" -lt 3600 ]; then
+            connection_time="~${seconds}s"
+          else
+            connection_time="~$((seconds / 3600))h"
+          fi
+        elif [[ $handshake == *"minute"* ]]; then
+          local minutes=$(echo "$handshake" | sed 's/[^0-9]*//g')
+          connection_time="~${minutes}m"
+        elif [[ $handshake == *"hour"* ]]; then
+          local hours=$(echo "$handshake" | sed 's/[^0-9]*//g')
+          connection_time="~${hours}h"
+        fi
+        if [ -n "$connection_time" ]; then
+          echo "   Estimated Connection Time: $connection_time"
+        fi
+      fi
+      echo ""
+
+      # トラフィック情報
+      local transfer_line=$(echo "$peer_info" | grep "transfer:")
+      if [ -n "$transfer_line" ]; then
+        echo "📊 Traffic Statistics:"
+        echo "   $transfer_line"
+
+        # 詳細なトラフィック分析
+        local rx_info=$(echo "$transfer_line" | sed 's/.*transfer: //' | sed 's/ received.*//')
+        local tx_info=$(echo "$transfer_line" | sed 's/.*transfer: //' | sed 's/.*received, //' | sed 's/ sent.*//')
+
+        if [ -n "$rx_info" ] && [ -n "$tx_info" ]; then
+          local rx_bytes=$(echo "$rx_info" | sed 's/[^0-9.]*//g')
+          local rx_unit=$(echo "$rx_info" | sed 's/[0-9.]*//g' | tr -d ' ')
+          local tx_bytes=$(echo "$tx_info" | sed 's/[^0-9.]*//g')
+          local tx_unit=$(echo "$tx_info" | sed 's/[0-9.]*//g' | tr -d ' ')
+
+          local rx_bytes_num=$(convert_to_bytes "$rx_bytes" "$rx_unit")
+          local tx_bytes_num=$(convert_to_bytes "$tx_bytes" "$tx_unit")
+
+          echo ""
+          echo "📈 Detailed Traffic Analysis:"
+          echo "   Data Received: $(bytes_to_human $rx_bytes_num)"
+          echo "   Data Sent: $(bytes_to_human $tx_bytes_num)"
+          echo "   Total Traffic: $(bytes_to_human $((rx_bytes_num + tx_bytes_num)))"
+
+          # 通信比率の計算
+          if [ $((rx_bytes_num + tx_bytes_num)) -gt 0 ]; then
+            local rx_ratio=$((rx_bytes_num * 100 / (rx_bytes_num + tx_bytes_num)))
+            local tx_ratio=$((tx_bytes_num * 100 / (rx_bytes_num + tx_bytes_num)))
+            echo "   Traffic Ratio: ${rx_ratio}% RX, ${tx_ratio}% TX"
+          fi
+        fi
+      fi
+    else
+      echo "🔴 Connection Status: Disconnected"
+      echo ""
+      echo "ℹ️  Client is configured but not currently connected."
+    fi
+  else
+    echo "❌ Cannot retrieve WireGuard statistics."
+    echo "   Make sure WireGuard is running and interface is active."
+  fi
+
+  # 設定ファイル情報
+  echo ""
+  echo "📁 Configuration Files:"
+  local config_file="$HOMEDIR/wireguard/conf/${client_name}.conf"
+  local qr_file="$HOMEDIR/wireguard/qrcodes/${client_name}.png"
+
+  if [ -f "$config_file" ]; then
+    local config_size=$(stat -c%s "$config_file" 2>/dev/null || echo "0")
+    echo "   ✅ Config file: $config_file ($(bytes_to_human $config_size))"
+  else
+    echo "   ❌ Config file: Not found"
+  fi
+
+  if [ -f "$qr_file" ]; then
+    local qr_size=$(stat -c%s "$qr_file" 2>/dev/null || echo "0")
+    echo "   ✅ QR code: $qr_file ($(bytes_to_human $qr_size))"
+  else
+    echo "   ❌ QR code: Not found"
+  fi
+
+  # 鍵ファイル情報
+  local priv_key_file="/etc/wireguard/keys/${client_name}.prv"
+  local pub_key_file="/etc/wireguard/keys/${client_name}.pub"
+
+  if [ -f "$priv_key_file" ] && [ -f "$pub_key_file" ]; then
+    echo "   ✅ Key files: Available"
+  else
+    echo "   ❌ Key files: Missing"
+  fi
+}
+
+convert_to_bytes() {
+  local value=$1
+  local unit=$2
+
+  # 小数点を含む数値を整数に変換
+  local int_value=$(echo "$value" | awk '{print int($1)}')
+
+  case $unit in
+    "B") echo $int_value ;;
+    "KiB"|"KB") echo $((int_value * 1024)) ;;
+    "MiB"|"MB") echo $((int_value * 1024 * 1024)) ;;
+    "GiB"|"GB") echo $((int_value * 1024 * 1024 * 1024)) ;;
+    "TiB"|"TB") echo $((int_value * 1024 * 1024 * 1024 * 1024)) ;;
+    *) echo $int_value ;;  # 単位が不明な場合はそのまま
+  esac
+}
+
+bytes_to_human() {
+  local bytes=$1
+
+  if [ $bytes -ge $((1024 * 1024 * 1024 * 1024)) ]; then
+    echo "$((bytes / (1024 * 1024 * 1024 * 1024))) TiB"
+  elif [ $bytes -ge $((1024 * 1024 * 1024)) ]; then
+    echo "$((bytes / (1024 * 1024 * 1024))) GiB"
+  elif [ $bytes -ge $((1024 * 1024)) ]; then
+    echo "$((bytes / (1024 * 1024))) MiB"
+  elif [ $bytes -ge 1024 ]; then
+    echo "$((bytes / 1024)) KiB"
+  else
+    echo "${bytes} B"
   fi
 }
 
@@ -732,6 +1462,11 @@ case "$CMD" in
   del)  [[ $# -ne 1 ]] && usage; delete_client "$1" ;;
   list) [[ $# -ne 0 ]] && usage; list_clients ;;
   connected) [[ $# -ne 0 ]] && usage; list_connected_clients ;;
+  enable) [[ $# -ne 1 ]] && usage; enable_client "$1" ;;
+  disable) [[ $# -ne 1 ]] && usage; disable_client "$1" ;;
+  validate) [[ $# -ne 0 ]] && usage; validate_config ;;
+  health) [[ $# -ne 0 ]] && usage; health_check ;;
+  stats) [[ $# -gt 1 ]] && usage; show_stats "$1" ;;
   status) [[ $# -ne 0 ]] && usage; show_status ;;
   start) [[ $# -ne 0 ]] && usage; start_service ;;
   stop) [[ $# -ne 0 ]] && usage; stop_service ;;

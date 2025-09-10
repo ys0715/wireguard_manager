@@ -86,6 +86,7 @@ sudo ./wireguard_manager.sh list
 **表示内容:**
 - クライアント名
 - VPN IPアドレス
+- 🟢/🔴 有効/無効状態
 - 設定ファイルの有無
 - QRコードファイルの有無
 - 鍵ファイルの有無
@@ -107,12 +108,114 @@ sudo ./wireguard_manager.sh connected
 - 🌐 エンドポイント（接続元IP:ポート）
 - ⏰ 最終ハンドシェイク時間
 - 📊 トラフィック情報（送受信バイト数）
+- ⚙️ 設定状態（有効/無効）
 - 🟢 接続状態
 - 登録されていないピアの警告表示
 - 接続中のクライアント数と総数のサマリー
 
-### 6. サービスステータスの確認
+### 6. クライアントの有効化
 
+```bash
+sudo ./wireguard_manager.sh enable <クライアント名>
+```
+
+**例:**
+```bash
+sudo ./wireguard_manager.sh enable client1
+```
+
+### 7. クライアントの無効化
+
+```bash
+sudo ./wireguard_manager.sh disable <クライアント名>
+```
+
+**例:**
+```bash
+sudo ./wireguard_manager.sh disable client1
+```
+
+**機能説明:**
+- 無効化されたクライアントはVPN接続ができなくなります
+- 設定ファイルは保持されるため、後で簡単に再有効化可能
+- 即時反映：サービス実行中は自動で設定が再読み込みされます
+
+### 8. 設定バリデーション
+
+```bash
+sudo ./wireguard_manager.sh validate
+```
+
+**例:**
+```bash
+sudo ./wireguard_manager.sh validate
+```
+
+**チェック項目:**
+- ✅ 設定ファイルの存在と構文チェック
+- ✅ サーバーキーの存在確認
+- ✅ IPアドレスの重複チェック
+- ✅ ポートの競合チェック
+- ✅ クライアント設定ファイルの整合性確認
+- ✅ ファイアウォール設定の確認
+- 📊 エラー数と警告数の集計
+
+### 9. ヘルスチェック
+
+```bash
+sudo ./wireguard_manager.sh health
+```
+
+**例:**
+```bash
+sudo ./wireguard_manager.sh health
+```
+
+**包括的なチェック項目:**
+- 🔧 設定ファイルの検証
+- ⚙️ サービス状態の確認
+- 🌐 インターフェース状態の確認
+- 📡 接続テストとピア状態
+- 📊 トラフィック統計
+- 📝 ログエラーの確認
+- 💻 システムリソースの監視
+
+### 10. 詳細統計情報の表示
+
+```bash
+sudo ./wireguard_manager.sh stats [client-name]
+```
+
+**例:**
+```bash
+# 全体統計を表示
+sudo ./wireguard_manager.sh stats
+
+# 個別クライアントの統計を表示
+sudo ./wireguard_manager.sh stats client1
+```
+
+**全体統計表示内容:**
+- 🌐 インターフェース情報（IP、MTU、ポート）
+- 📊 インターフェーストラフィック統計
+- 👥 クライアント統計サマリー（接続数、切断数）
+- 📈 総トラフィック量と平均値
+- 💻 システム情報（稼働時間、負荷平均）
+
+**個別統計表示内容:**
+- 👤 クライアント基本情報
+- 🔗 接続状態とエンドポイント
+- ⏰ 最終ハンドシェイクと推定接続時間
+- 📊 詳細トラフィック情報（受信/送信量、比率）
+- 📁 設定ファイルの状態
+
+### 11. サービスステータスの確認
+
+```bash
+sudo ./wireguard_manager.sh status
+```
+
+**例:**
 ```bash
 sudo ./wireguard_manager.sh status
 ```
@@ -124,19 +227,19 @@ sudo ./wireguard_manager.sh status
 - トラフィック統計
 - 最新のログ
 
-### 6. サービスの起動
+### 9. サービスの起動
 
 ```bash
 sudo ./wireguard_manager.sh start
 ```
 
-### 7. サービスの停止
+### 10. サービスの停止
 
 ```bash
 sudo ./wireguard_manager.sh stop
 ```
 
-### 8. サービスのリスタート
+### 11. サービスのリスタート
 
 ```bash
 sudo ./wireguard_manager.sh restart
